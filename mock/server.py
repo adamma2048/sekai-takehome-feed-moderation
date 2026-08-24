@@ -7,6 +7,9 @@
 Endpoints
     GET  /feed?cursor=&limit=      paged, infinite by default
     GET  /content/<id>             ~5 MB HTML, exposes sekaiPlay() / sekaiPause()
+    GET  /creator/<creatorId>      profile for the creator page
+    GET  /creator/<id>/items       that creator's works, paged (same ids as the feed)
+    GET  /avatar/<creatorId>       tiny SVG, so nothing reaches the public internet
     POST /moderation               202 after a delay, fails ~20% of the time
 
 Android emulator reaches the host at http://10.0.2.2:8787 .
@@ -33,6 +36,16 @@ CREATORS = [
     ("creator_6", "origami_red"),
     ("creator_7", "web_weaver"),
 ]
+
+BIOS = {
+    "creator_1": "lo-fi loops and small machines",
+    "creator_2": "dark ambient, mostly at 3am",
+    "creator_3": "cozy rooms for tired people",
+    "creator_4": "prank boxes. no refunds.",
+    "creator_5": "physics toys",
+    "creator_6": "paper, folded until it bounces",
+    "creator_7": "webs, weavers, and the flies between",
+}
 
 TITLES = [
     "Lo-Fi Vibe Mixer", "Giggle Pop", "Yaya's Room", "Gagg Box",
@@ -148,6 +161,13 @@ class Handler(BaseHTTPRequestHandler):
             return self._feed(parse_qs(url.query))
         if url.path.startswith("/content/"):
             return self._content(url.path.rsplit("/", 1)[-1])
+        if url.path.startswith("/creator/"):
+            rest = url.path[len("/creator/"):]
+            if rest.endswith("/items"):
+                return self._creator_items(rest[: -len("/items")], parse_qs(url.query))
+            return self._creator(rest)
+        if url.path.startswith("/avatar/"):
+            return self._avatar(url.path.rsplit("/", 1)[-1])
         if url.path == "/health":
             return self._json(200, {"ok": True})
         self._json(404, {"error": "not found"})
@@ -181,6 +201,73 @@ class Handler(BaseHTTPRequestHandler):
             "items": items,
             "nextCursor": None if end else str(cursor + limit),
         })
+
+    # ── creator 二级页 ─────────────────────────────────────────────────────────
+    #
+    # 作品是从 feed 的同一套规则算出来的(creator_k 拥有 index % len(CREATORS) 命中它的
+    # 每一条),所以 creator 页里的 item id 和 feed 里的**是同一批**。拉黑之后这两处
+    # 必须一起消失 —— 如果候选人只在 feed 那侧做了过滤,这一页会立刻拆穿它。
+    def _creator_ids(self) -> dict:
+        return {cid: i for i, (cid, _name) in enumerate(CREATORS)}
+
+    def _creator(self, creator_id: str) -> None:
+        offsets = self._creator_ids()
+        if creator_id not in offsets:
+            return self._json(404, {"error": "unknown creator"})
+        index = offsets[creator_id]
+        _cid, name = CREATORS[index]
+        origin = f"http://{self.headers.get('Host', f'127.0.0.1:{self.args.port}')}"
+        time.sleep(self.args.latency_ms / 1000.0)
+        self._json(200, {
+            "id": creator_id,
+            "name": name,
+            "bio": BIOS.get(creator_id, ""),
+            "avatarUrl": f"{origin}/avatar/{creator_id}",
+            "stats": {
+                # 稳定的假数字:同一个 creator 每次返回一样,截图/录屏才可比。
+                "following": 10 + index * 7,
+                "followers": 60 + index * 23,
+                "likes": 440 + index * 137,
+            },
+        })
+
+    def _creator_items(self, creator_id: str, query: dict) -> None:
+        offsets = self._creator_ids()
+        if creator_id not in offsets:
+            return self._json(404, {"error": "unknown creator"})
+        start = int((query.get("cursor") or ["0"])[0] or 0)
+        limit = int((query.get("limit") or [str(self.args.page_size)])[0])
+        limit = max(1, min(limit, 50))
+        time.sleep(self.args.latency_ms / 1000.0)
+
+        origin = f"http://{self.headers.get('Host', f'127.0.0.1:{self.args.port}')}"
+        step = len(CREATORS)
+        first = offsets[creator_id]
+        indices = [first + step * (start + n) for n in range(limit)]
+        if self.args.total is not None:
+            indices = [i for i in indices if i < self.args.total]
+        items = [_item(i, origin) for i in indices]
+        end = self.args.total is not None and (not items or len(items) < limit)
+        self._json(200, {
+            "items": items,
+            "nextCursor": None if end else str(start + limit),
+        })
+
+    def _avatar(self, creator_id: str) -> None:
+        offsets = self._creator_ids()
+        if creator_id not in offsets:
+            return self._json(404, {"error": "unknown creator"})
+        index = offsets[creator_id]
+        bg, fg = PALETTE[index % len(PALETTE)]
+        initial = CREATORS[index][1][0].upper()
+        svg = (
+            '<svg xmlns="http://www.w3.org/2000/svg" width="240" height="240">'
+            f'<rect width="240" height="240" fill="{bg}"/>'
+            f'<circle cx="120" cy="120" r="96" fill="{fg}"/>'
+            f'<text x="120" y="152" font-size="96" font-family="sans-serif" '
+            f'text-anchor="middle" fill="{bg}">{initial}</text></svg>'
+        )
+        self._send(200, svg.encode(), "image/svg+xml")
 
     def _content(self, item_id: str) -> None:
         try:

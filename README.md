@@ -113,6 +113,29 @@ An HTML page of roughly **5 MB**. It defines:
 - It **does not** start on its own, and it reports its state in the page so you can see from a
   screen recording whether your app got the contract right.
 
+### `GET /creator/<creatorId>`
+
+```json
+{
+  "id": "creator_7",
+  "name": "web_weaver",
+  "bio": "webs, weavers, and the flies between",
+  "avatarUrl": "http://127.0.0.1:8787/avatar/creator_7",
+  "stats": { "following": 52, "followers": 198, "likes": 1262 }
+}
+```
+
+The avatar is a small SVG served by the mock, so nothing on this exercise reaches the public
+internet.
+
+### `GET /creator/<creatorId>/items?cursor=&limit=`
+
+That creator's works, paged like the feed.
+
+**These are the same items the feed serves** — `creator_1` owns `item_0000`, `item_0007`,
+`item_0014`, … in both places. That is deliberate: after blocking, this page is where a
+feed-only filter falls over.
+
 ### `POST /moderation`
 
 ```json
