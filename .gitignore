@@ -1,0 +1,9 @@
+__pycache__/
+*.pyc
+.DS_Store
+
+# Candidate submissions are sent to us separately; nothing built locally belongs here.
+build/
+.gradle/
+*.xcodeproj/xcuserdata/
+DerivedData/
