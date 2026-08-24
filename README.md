@@ -241,7 +241,12 @@ soft spots.
 
 ## Submitting
 
-Send us a repository (or a zip) containing:
+**Fork this repository**, build your app inside your fork, and **send us the URL of your fork
+when you are done.** Keep the mock server as it is — we run your app against it, so a modified
+mock makes the submissions incomparable. If you did have to change it, say so in your README
+and tell us why.
+
+Your fork should contain:
 
 1. The app source.
 2. A **short README** covering: how to run it, what you cut, your frame-timing measurement
