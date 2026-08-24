@@ -13,9 +13,9 @@ what you cut and why. A short honest README beats a large unfinished app.
 
 ## The scenario
 
-Sekai's main surface is a vertical feed. Each item is a small interactive experience rendered
-in a **WebView**, not a video and not a native view. Two facts about that content shape
-everything else:
+Sekai's main surface is a vertical feed. Each item — we call one a **sekai** — is a small
+interactive experience rendered in a **WebView**, not a video and not a native view. Two facts
+about that content shape everything else:
 
 - Each item is **~5 MB**. You cannot keep them all alive.
 - Content only runs when the app tells it to. The page exposes `window.sekaiPlay()` and
@@ -50,10 +50,11 @@ From the feed item, the user can **report the content** or **block its creator**
 
 ### 3. Creator page
 
-- Tapping the creator on a feed item opens their page.
+- Tapping the creator on a feed item opens their page: avatar, name, and **their sekais,
+  paged** (`userProfile` + `userGames` — see below).
 - The page has a **`⋯` button in the top-right**; it opens a panel containing **Block**.
-- After blocking, **every** work by that creator is invisible — in the feed, in the creator
-  page, and in anything else you built.
+- After blocking, **every** sekai by that creator is invisible — in the feed, on this page,
+  and anywhere else you built.
 
 ---
 
@@ -75,77 +76,112 @@ These are the three things we will look at first.
 
 ## Mock backend
 
-`mock/server.py` is a dependency-free Python 3 server. Start it with:
+`mock/server.py` is a dependency-free Python 3 server:
 
 ```bash
-python3 mock/server.py            # listens on http://127.0.0.1:8787
+python3 mock/server.py            # http://127.0.0.1:8787
+python3 mock/server.py --help     # page size, latency, payload size, failure rate
 ```
 
-Use `--help` for flags: page size, artificial latency, failure injection, payload size.
 Android emulator reaches the host at `http://10.0.2.2:8787`.
 
-### `GET /feed?cursor=<cursor>&limit=<n>`
+**The routes and field names mirror our production API; the data behind them is fake.** That
+is on purpose — the shapes you will meet on the job are the shapes you get here, including
+the two inconsistencies we live with: the feed returns a **bare array**, everything else is
+wrapped in `{code, message, data}`, and the wire is `snake_case`.
+
+Two screens, four requests.
+
+### The feed — `GET /game/feed?limit=<n>&refresh=<n>`
+
+`refresh` doubles as the page cursor here: `refresh=1` gives the next batch.
+
+```json
+[
+  {
+    "game_id": "game_0000",
+    "title": "Lo-Fi Vibe Mixer",
+    "game_url": "http://127.0.0.1:8787/content/game_0000",
+    "cover_url": "http://127.0.0.1:8787/avatar/creator_1",
+    "creator_id": "creator_1",
+    "creator_name": "mejikoOV_80",
+    "like_count": 7
+  }
+]
+```
+
+### The creator page — `GET /api/user/info/v1/userProfile?user_id=<id>`
 
 ```json
 {
-  "items": [
-    {
-      "id": "item_0042",
-      "creatorId": "creator_1",
-      "creatorName": "mejikoOV_80",
-      "title": "Yaya's Room",
-      "contentUrl": "http://127.0.0.1:8787/content/item_0042"
-    }
-  ],
-  "nextCursor": "43"
+  "code": 0,
+  "message": "ok",
+  "data": {
+    "user_id": "creator_1",
+    "nick_name": "mejikoOV_80",
+    "avatar": "http://127.0.0.1:8787/avatar/creator_1",
+    "bio": "lo-fi loops and small machines",
+    "following_count": 10,
+    "follower_count": 60,
+    "like_count": 440
+  }
 }
 ```
 
-`nextCursor` is `null` when the mock decides the feed has ended (it does not, by default —
-it is infinite on purpose).
+### The creator's sekais — `GET /api/game/list/v1/userGames?user_id=<id>&page=<n>&size=<n>`
 
-### `GET /content/<id>`
+```json
+{
+  "code": 0,
+  "message": "ok",
+  "data": {
+    "list": [
+      {
+        "game_id": "game_0000",
+        "title": "Lo-Fi Vibe Mixer",
+        "game_url": "http://127.0.0.1:8787/content/game_0000",
+        "cover_url": "http://127.0.0.1:8787/avatar/creator_1",
+        "creator_id": "creator_1",
+        "creator_name": "mejikoOV_80",
+        "like_count": 7
+      }
+    ],
+    "page": 0,
+    "size": 2,
+    "has_more": true
+  }
+}
+```
 
-An HTML page of roughly **5 MB**. It defines:
+**These are the same `game_id`s the feed serves** — `creator_1` owns `game_0000`,
+`game_0007`, `game_0014`, … in both places. Creators repeat every 7 items, so one block has
+to take out several sekais, including ones no page has fetched yet. After blocking, this
+screen is where a feed-only filter falls over.
 
-- `window.sekaiPlay()` — starts the animation, sets a visible "PLAYING" state.
+### The content — `GET /content/<gameId>`
+
+An HTML page of roughly **5 MB** (the `game_url` on each item). It defines:
+
+- `window.sekaiPlay()` — starts the animation, shows a visible `PLAYING` state.
 - `window.sekaiPause()` — stops it.
-- It **does not** start on its own, and it reports its state in the page so you can see from a
-  screen recording whether your app got the contract right.
 
-### `GET /creator/<creatorId>`
+It **does not** start on its own, and it renders its own play state plus a frame counter, so a
+screen recording shows whether your app got the contract right.
 
-```json
-{
-  "id": "creator_7",
-  "name": "web_weaver",
-  "bio": "webs, weavers, and the flies between",
-  "avatarUrl": "http://127.0.0.1:8787/avatar/creator_7",
-  "stats": { "following": 52, "followers": 198, "likes": 1262 }
-}
+### Moderation
+
+```
+POST /api/user/block/v1/blockUser          {"user_id": "creator_1"}
+POST /api/report/content/v1/reportContent  {"game_id": "game_0042", "reason": "spam"}
 ```
 
-The avatar is a small SVG served by the mock, so nothing on this exercise reaches the public
-internet.
+Both answer `{"code": 0}` after a delay — and **fail ~20% of the time** with a non-zero
+`code` (`--fail-rate` to change it). That failure is deliberate: decide what the user should
+see when the optimistic local change cannot be confirmed, and defend the choice in your README.
 
-### `GET /creator/<creatorId>/items?cursor=&limit=`
+### Avatars — `GET /avatar/<creatorId>`
 
-That creator's works, paged like the feed.
-
-**These are the same items the feed serves** — `creator_1` owns `item_0000`, `item_0007`,
-`item_0014`, … in both places. That is deliberate: after blocking, this page is where a
-feed-only filter falls over.
-
-### `POST /moderation`
-
-```json
-{ "action": "block_creator", "creatorId": "creator_7" }
-{ "action": "report_item",  "itemId": "item_0042", "reason": "spam" }
-```
-
-Returns `202` after a delay, and **fails ~20% of the time** (`--fail-rate` to change it).
-That failure is deliberate: decide what the user should see when the optimistic local change
-cannot be confirmed, and defend your choice in the README.
+A small SVG served by the mock, so nothing in this exercise reaches the public internet.
 
 ---
 

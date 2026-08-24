@@ -19,15 +19,21 @@ mock, and say so in your README.
 
 ## Endpoints
 
+Routes and field names mirror our production API; the data is fake. Two screens, four requests.
+
 | Route | What it gives you |
 | --- | --- |
-| `GET /feed?cursor=&limit=` | Paged feed, infinite by default |
-| `GET /content/<itemId>` | ~5 MB HTML; exposes `sekaiPlay()` / `sekaiPause()`, autostarts nothing |
-| `GET /creator/<creatorId>` | Profile for the creator page (name, bio, avatar, stats) |
-| `GET /creator/<creatorId>/items` | That creator's works — **the same item ids the feed serves** |
+| `GET /game/feed?limit=&refresh=` | The feed. **Bare array**, no envelope — that is what the real one does. `refresh` doubles as the page cursor. |
+| `GET /content/<gameId>` | ~5 MB HTML (`game_url` on each item); exposes `sekaiPlay()` / `sekaiPause()`, autostarts nothing |
+| `GET /api/user/info/v1/userProfile?user_id=` | Creator profile for the second-level page |
+| `GET /api/game/list/v1/userGames?user_id=&page=&size=` | That creator's sekais, paged — **the same `game_id`s the feed serves** |
 | `GET /avatar/<creatorId>` | Small SVG, so the exercise never needs the public internet |
-| `POST /moderation` | `202` after a delay; fails ~20% of the time on purpose |
+| `POST /api/user/block/v1/blockUser` | `{"user_id": "..."}` — fails ~20% of the time on purpose |
+| `POST /api/report/content/v1/reportContent` | `{"game_id": "...", "reason": "..."}` — same |
 | `GET /health` | `{"ok": true}` |
 
-Creators repeat every 7 items (`creator_1` owns `item_0000`, `item_0007`, `item_0014`, …),
-so one block has to take out several items — including items no page has fetched yet.
+Everything except `/game/feed` answers `{code, message, data}` with `code: 0` on success.
+The wire is `snake_case`. Both quirks are inherited from the real API on purpose.
+
+Creators repeat every 7 items (`creator_1` owns `game_0000`, `game_0007`, `game_0014`, …),
+so one block has to take out several sekais — including ones no page has fetched yet.

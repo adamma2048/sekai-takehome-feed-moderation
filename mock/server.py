@@ -4,13 +4,15 @@
     python3 mock/server.py                 # http://127.0.0.1:8787
     python3 mock/server.py --help          # latency, page size, payload size, fail rate
 
-Endpoints
-    GET  /feed?cursor=&limit=      paged, infinite by default
-    GET  /content/<id>             ~5 MB HTML, exposes sekaiPlay() / sekaiPause()
-    GET  /creator/<creatorId>      profile for the creator page
-    GET  /creator/<id>/items       that creator's works, paged (same ids as the feed)
-    GET  /avatar/<creatorId>       tiny SVG, so nothing reaches the public internet
-    POST /moderation               202 after a delay, fails ~20% of the time
+Endpoints — 路径/字段照抄我们线上的形状,内容是假的:
+    GET  /game/feed?limit=&refresh=              裸数组(线上 feed 就没有信封)
+    GET  /content/<gameId>                       ~5 MB HTML,暴露 sekaiPlay()/sekaiPause()
+    GET  /api/user/info/v1/userProfile?user_id=  creator 档案
+    GET  /api/game/list/v1/userGames?user_id=&page=&size=
+                                                 该 creator 的 sekai,分页,game_id 与 feed 同源
+    GET  /avatar/<creatorId>                     小 SVG,整道题不出公网
+    POST /api/user/block/v1/blockUser            {code,message,data};~20% 故意失败
+    POST /api/report/content/v1/reportContent    同上
 
 Android emulator reaches the host at http://10.0.2.2:8787 .
 """
@@ -125,13 +127,16 @@ PALETTE = [
 
 
 def _item(index: int, content_origin: str) -> dict:
+    """一条 sekai。字段名照抄我们线上 feed 的 DTO(snake_case),只保留这道题用得上的那些。"""
     creator_id, creator_name = CREATORS[index % len(CREATORS)]
     return {
-        "id": f"item_{index:04d}",
-        "creatorId": creator_id,
-        "creatorName": creator_name,
+        "game_id": f"game_{index:04d}",
         "title": TITLES[index % len(TITLES)],
-        "contentUrl": f"{content_origin}/content/item_{index:04d}",
+        "game_url": f"{content_origin}/content/game_{index:04d}",
+        "cover_url": f"{content_origin}/avatar/{creator_id}",
+        "creator_id": creator_id,
+        "creator_name": creator_name,
+        "like_count": 7 + (index * 13) % 400,
     }
 
 
@@ -157,15 +162,18 @@ class Handler(BaseHTTPRequestHandler):
     # ── routes ──────────────────────────────────────────────────────────────────
     def do_GET(self) -> None:  # noqa: N802 (BaseHTTPRequestHandler API)
         url = urlparse(self.path)
-        if url.path == "/feed":
-            return self._feed(parse_qs(url.query))
+        query = parse_qs(url.query)
+        # 路径按我们线上的形状来,只是内容是假的:
+        #   feed 是 `game/feed`,直接返回**裸数组**(没有 {code,data} 信封);
+        #   其余走 `api/<域>/<区>/v1/<动作>`,返回 {code,message,data}。
+        if url.path == "/game/feed":
+            return self._feed(query)
+        if url.path == "/api/user/info/v1/userProfile":
+            return self._creator(query)
+        if url.path == "/api/game/list/v1/userGames":
+            return self._creator_items(query)
         if url.path.startswith("/content/"):
             return self._content(url.path.rsplit("/", 1)[-1])
-        if url.path.startswith("/creator/"):
-            rest = url.path[len("/creator/"):]
-            if rest.endswith("/items"):
-                return self._creator_items(rest[: -len("/items")], parse_qs(url.query))
-            return self._creator(rest)
         if url.path.startswith("/avatar/"):
             return self._avatar(url.path.rsplit("/", 1)[-1])
         if url.path == "/health":
@@ -173,8 +181,11 @@ class Handler(BaseHTTPRequestHandler):
         self._json(404, {"error": "not found"})
 
     def do_POST(self) -> None:  # noqa: N802
-        if urlparse(self.path).path != "/moderation":
-            return self._json(404, {"error": "not found"})
+        path = urlparse(self.path).path
+        # 与线上同形:拉黑在 user 域,举报在 report 域。两个都是 {code,message,data}。
+        if path not in ("/api/user/block/v1/blockUser",
+                        "/api/report/content/v1/reportContent"):
+            return self._json(404, {"code": 40400, "message": "not found", "data": None})
         length = int(self.headers.get("Content-Length", 0))
         raw = self.rfile.read(length) if length else b"{}"
         try:
@@ -183,24 +194,31 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(400, {"error": "invalid json"})
 
         time.sleep(self.args.latency_ms / 1000.0)
-        # Deliberate: the optimistic local change has to survive a server that says no.
+        # 故意的:乐观更新必须扛得住服务端说不。
         if random.random() < self.args.fail_rate:
-            return self._json(500, {"error": "moderation service unavailable"})
-        return self._json(202, {"accepted": True, "echo": body})
+            return self._json(200, {"code": 50000, "message": "service unavailable",
+                                    "data": None})
+        return self._json(200, {"code": 0, "message": "ok", "data": {"echo": body}})
 
     def _feed(self, query: dict) -> None:
-        cursor = int((query.get("cursor") or ["0"])[0] or 0)
+        """`GET /game/feed?limit=&refresh=` —— 与线上同形:**裸数组**,没有信封。
+
+        线上的 `refresh` 是"第几次刷新"的意思,这里同时拿它当游标用:refresh=n 给第 n 页。
+        不带 refresh 就一直从头发,和线上"下拉刷新拿一批新的"手感一致。
+        """
         limit = int((query.get("limit") or [str(self.args.page_size)])[0])
         limit = max(1, min(limit, 50))
+        refresh = int((query.get("refresh") or ["0"])[0] or 0)
         time.sleep(self.args.latency_ms / 1000.0)
 
         origin = f"http://{self.headers.get('Host', f'127.0.0.1:{self.args.port}')}"
-        items = [_item(i, origin) for i in range(cursor, cursor + limit)]
-        end = self.args.total is not None and cursor + limit >= self.args.total
-        self._json(200, {
-            "items": items,
-            "nextCursor": None if end else str(cursor + limit),
-        })
+        start = refresh * limit
+        indices = range(start, start + limit)
+        if self.args.total is not None:
+            indices = [i for i in indices if i < self.args.total]
+        self._send(200,
+                   json.dumps([_item(i, origin) for i in indices]).encode(),
+                   "application/json")
 
     # ── creator 二级页 ─────────────────────────────────────────────────────────
     #
@@ -210,48 +228,56 @@ class Handler(BaseHTTPRequestHandler):
     def _creator_ids(self) -> dict:
         return {cid: i for i, (cid, _name) in enumerate(CREATORS)}
 
-    def _creator(self, creator_id: str) -> None:
+    def _creator(self, query: dict) -> None:
+        """`GET /api/user/info/v1/userProfile?user_id=` —— 信封形状 {code,message,data}。"""
+        creator_id = (query.get("user_id") or [""])[0]
         offsets = self._creator_ids()
         if creator_id not in offsets:
-            return self._json(404, {"error": "unknown creator"})
+            return self._json(200, {"code": 40400, "message": "user not found", "data": None})
         index = offsets[creator_id]
         _cid, name = CREATORS[index]
         origin = f"http://{self.headers.get('Host', f'127.0.0.1:{self.args.port}')}"
         time.sleep(self.args.latency_ms / 1000.0)
-        self._json(200, {
-            "id": creator_id,
-            "name": name,
+        self._json(200, {"code": 0, "message": "ok", "data": {
+            "user_id": creator_id,
+            "nick_name": name,
+            "avatar": f"{origin}/avatar/{creator_id}",
             "bio": BIOS.get(creator_id, ""),
-            "avatarUrl": f"{origin}/avatar/{creator_id}",
-            "stats": {
-                # 稳定的假数字:同一个 creator 每次返回一样,截图/录屏才可比。
-                "following": 10 + index * 7,
-                "followers": 60 + index * 23,
-                "likes": 440 + index * 137,
-            },
-        })
+            # 稳定的假数字:同一个 creator 每次一样,截图/录屏才可比。
+            "following_count": 10 + index * 7,
+            "follower_count": 60 + index * 23,
+            "like_count": 440 + index * 137,
+        }})
 
-    def _creator_items(self, creator_id: str, query: dict) -> None:
+    def _creator_items(self, query: dict) -> None:
+        """`GET /api/game/list/v1/userGames?user_id=&page=&size=` —— 该 creator 的 sekai,分页。
+
+        返回的 game_id 与 feed **完全同源**(creator_k 拥有每第 7 条)。只在 feed 那侧做过滤的
+        实现,一进这一页就会露馅 —— 这正是「拉黑后所有作品不可见」要考的东西。
+        """
+        creator_id = (query.get("user_id") or [""])[0]
         offsets = self._creator_ids()
         if creator_id not in offsets:
-            return self._json(404, {"error": "unknown creator"})
-        start = int((query.get("cursor") or ["0"])[0] or 0)
-        limit = int((query.get("limit") or [str(self.args.page_size)])[0])
-        limit = max(1, min(limit, 50))
+            return self._json(200, {"code": 40400, "message": "user not found", "data": None})
+        page = int((query.get("page") or ["0"])[0] or 0)
+        size = int((query.get("size") or [str(self.args.page_size)])[0])
+        size = max(1, min(size, 50))
         time.sleep(self.args.latency_ms / 1000.0)
 
         origin = f"http://{self.headers.get('Host', f'127.0.0.1:{self.args.port}')}"
         step = len(CREATORS)
         first = offsets[creator_id]
-        indices = [first + step * (start + n) for n in range(limit)]
+        indices = [first + step * (page * size + n) for n in range(size)]
         if self.args.total is not None:
             indices = [i for i in indices if i < self.args.total]
         items = [_item(i, origin) for i in indices]
-        end = self.args.total is not None and (not items or len(items) < limit)
-        self._json(200, {
-            "items": items,
-            "nextCursor": None if end else str(start + limit),
-        })
+        self._json(200, {"code": 0, "message": "ok", "data": {
+            "list": items,
+            "page": page,
+            "size": size,
+            "has_more": bool(items) and (self.args.total is None or
+                                         indices[-1] + step < self.args.total),
+        }})
 
     def _avatar(self, creator_id: str) -> None:
         offsets = self._creator_ids()
