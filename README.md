@@ -91,13 +91,13 @@ Android emulator reaches the host at `http://10.0.2.2:8787`.
   "items": [
     {
       "id": "item_0042",
-      "creatorId": "creator_7",
+      "creatorId": "creator_1",
       "creatorName": "mejikoOV_80",
-      "title": "Lo-Fi Vibe Mixer",
+      "title": "Yaya's Room",
       "contentUrl": "http://127.0.0.1:8787/content/item_0042"
     }
   ],
-  "nextCursor": "42"
+  "nextCursor": "43"
 }
 ```
 
