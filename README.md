@@ -26,6 +26,17 @@ Users must be able to get abusive content and abusive creators out of their feed
 user blocks a creator, that creator's work has to disappear everywhere in the app, not just
 from the card that happened to be on screen.
 
+### What we use, for context
+
+Not a requirement — you are free to choose — but you may as well know what the code you would
+be joining looks like:
+
+- **Android**: Kotlin `Flow` / `StateFlow` throughout.
+- **iOS**: Combine is the workhorse (`@Published` + `ObservableObject` for the SwiftUI
+  binding). The shared Kotlin layer's `Flow`s arrive in Swift as `AsyncSequence` — SKIE
+  bridges them — so `for await` sits next to Combine in the same view models.
+- No third-party state library on either side.
+
 ---
 
 ## What to build
@@ -62,9 +73,26 @@ From the feed item, the user can **report the content** or **block its creator**
 
 These are the three things we will look at first.
 
-1. **Data flows through a stream, not through mutable shared state.**
-   Kotlin `Flow` / `StateFlow` on Android; Combine or `AsyncSequence` on iOS. The visible
-   feed should be *derived* from its inputs, not patched by hand at each call site.
+1. **Data flows through a stream, and the visible feed is _derived_ from it.**
+
+   This is the requirement we weigh most, and it is not about which library you picked. The
+   visible list should fall out of its inputs:
+
+   ```
+   visibleFeed = fetchedPages - blockedCreators - reportedSekais
+   ```
+
+   not be patched by hand at each call site (`list.remove(...)` in the block handler, again
+   in the report handler, again after the next page arrives). The second shape is what breaks
+   when a later page re-delivers an item you already removed.
+
+   - **Android**: `Flow` / `StateFlow`, `combine`, `stateIn`.
+   - **iOS**: `CurrentValueSubject` (this is Combine's `StateFlow` — hot, always holds a
+     current value, multicasts) or `@Published`, which is sugar over it. `AsyncStream` is
+     fine too. If you prefer TCA, use it — we do not, but we will read it happily.
+
+   Note that `Observation` / `@Observable` is iOS 17+, and this exercise targets iOS 15, the
+   same floor we ship.
 
 2. **Scrolling does not drop frames.** With 5 MB items, this is the requirement with teeth.
    Tell us **how you measured it** — a frame-timing trace, `FrameMetrics`, Instruments, an
@@ -190,7 +218,7 @@ A small SVG served by the mock, so nothing in this exercise reaches the public i
 | Area | What earns points |
 | --- | --- |
 | **Correctness of the hidden set** | Blocking a creator hides *all* their items, including ones already fetched and ones that arrive in a later page. Reported items stay gone across a scroll back and an app restart. |
-| **Where that logic lives** | One source of truth that the UI derives from, versus removal code sprinkled at each call site. We care about this more than about which library you used. |
+| **Where that logic lives** | One source of truth the UI derives from, versus removal code sprinkled at each call site. We care about this far more than about which library you used — `CurrentValueSubject`, `@Published`, `AsyncStream`, `StateFlow`, TCA all pass; a hand-patched list does not. |
 | **Memory under 5 MB items** | What is alive while scrolling, and why that number. Show us. |
 | **Frame timing** | Your measurement, your numbers, and what you changed because of them. |
 | **The play/pause contract** | Exactly one playing item; nothing keeps running off screen. |
