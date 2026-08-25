@@ -4,15 +4,15 @@
     python3 mock/server.py                 # http://127.0.0.1:8787
     python3 mock/server.py --help          # latency, page size, payload size, fail rate
 
-Endpoints — 路径/字段照抄我们线上的形状,内容是假的:
-    GET  /game/feed?limit=&refresh=              裸数组(线上 feed 就没有信封)
-    GET  /content/<gameId>                       ~5 MB HTML,暴露 sekaiPlay()/sekaiPause()
-    GET  /api/user/info/v1/userProfile?user_id=  creator 档案
+Endpoints — paths and fields copy the shape of our production API; the content is fake:
+    GET  /game/feed?limit=&refresh=              bare array (the live feed has no envelope)
+    GET  /content/<gameId>                       ~5 MB HTML, exposes sekaiPlay()/sekaiPause()
+    GET  /api/user/info/v1/userProfile?user_id=  creator profile
     GET  /api/game/list/v1/userGames?user_id=&page=&size=
-                                                 该 creator 的 sekai,分页,game_id 与 feed 同源
-    GET  /avatar/<creatorId>                     小 SVG,整道题不出公网
-    POST /api/user/block/v1/blockUser            {code,message,data};~20% 故意失败
-    POST /api/report/content/v1/reportContent    同上
+                                                 that creator's sekais, paged; game_id shares the feed's source
+    GET  /avatar/<creatorId>                     tiny SVG, so the whole exercise stays off the public net
+    POST /api/user/block/v1/blockUser            {code,message,data}; ~20% fail on purpose
+    POST /api/report/content/v1/reportContent    same as above
 
 Android emulator reaches the host at http://10.0.2.2:8787 .
 """
@@ -127,7 +127,7 @@ PALETTE = [
 
 
 def _item(index: int, content_origin: str) -> dict:
-    """一条 sekai。字段名照抄我们线上 feed 的 DTO(snake_case),只保留这道题用得上的那些。"""
+    """One sekai. Field names copy our live feed DTO (snake_case), keeping only what this exercise needs."""
     creator_id, creator_name = CREATORS[index % len(CREATORS)]
     return {
         "game_id": f"game_{index:04d}",
@@ -163,9 +163,9 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:  # noqa: N802 (BaseHTTPRequestHandler API)
         url = urlparse(self.path)
         query = parse_qs(url.query)
-        # 路径按我们线上的形状来,只是内容是假的:
-        #   feed 是 `game/feed`,直接返回**裸数组**(没有 {code,data} 信封);
-        #   其余走 `api/<域>/<区>/v1/<动作>`,返回 {code,message,data}。
+        # Paths follow the shape of our production API; only the content is fake:
+        #   the feed is `game/feed` and returns a **bare array** (no {code,data} envelope);
+        #   everything else is `api/<domain>/<area>/v1/<action>` and returns {code,message,data}.
         if url.path == "/game/feed":
             return self._feed(query)
         if url.path == "/api/user/info/v1/userProfile":
@@ -182,7 +182,8 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:  # noqa: N802
         path = urlparse(self.path).path
-        # 与线上同形:拉黑在 user 域,举报在 report 域。两个都是 {code,message,data}。
+        # Same shape as production: blocking lives in the user domain, reporting in the report
+        # domain. Both return {code,message,data}.
         if path not in ("/api/user/block/v1/blockUser",
                         "/api/report/content/v1/reportContent"):
             return self._json(404, {"code": 40400, "message": "not found", "data": None})
@@ -194,17 +195,18 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(400, {"error": "invalid json"})
 
         time.sleep(self.args.latency_ms / 1000.0)
-        # 故意的:乐观更新必须扛得住服务端说不。
+        # Deliberate: an optimistic update has to survive the server saying no.
         if random.random() < self.args.fail_rate:
             return self._json(200, {"code": 50000, "message": "service unavailable",
                                     "data": None})
         return self._json(200, {"code": 0, "message": "ok", "data": {"echo": body}})
 
     def _feed(self, query: dict) -> None:
-        """`GET /game/feed?limit=&refresh=` —— 与线上同形:**裸数组**,没有信封。
+        """`GET /game/feed?limit=&refresh=` — same shape as production: a **bare array**, no envelope.
 
-        线上的 `refresh` 是"第几次刷新"的意思,这里同时拿它当游标用:refresh=n 给第 n 页。
-        不带 refresh 就一直从头发,和线上"下拉刷新拿一批新的"手感一致。
+        In production `refresh` means "which refresh is this"; here it doubles as a cursor,
+        so refresh=n serves page n. Without it the server keeps serving from the top, which
+        matches how pull-to-refresh feels in production.
         """
         limit = int((query.get("limit") or [str(self.args.page_size)])[0])
         limit = max(1, min(limit, 50))
@@ -220,16 +222,17 @@ class Handler(BaseHTTPRequestHandler):
                    json.dumps([_item(i, origin) for i in indices]).encode(),
                    "application/json")
 
-    # ── creator 二级页 ─────────────────────────────────────────────────────────
+    # ── creator secondary page ──────────────────────────────────────────────────
     #
-    # 作品是从 feed 的同一套规则算出来的(creator_k 拥有 index % len(CREATORS) 命中它的
-    # 每一条),所以 creator 页里的 item id 和 feed 里的**是同一批**。拉黑之后这两处
-    # 必须一起消失 —— 如果候选人只在 feed 那侧做了过滤,这一页会立刻拆穿它。
+    # A creator's works come from the same rule the feed uses (creator_k owns every item
+    # whose index % len(CREATORS) hits it), so the item ids on the creator page are **the
+    # same batch** as in the feed. After a block both places must go away together — an
+    # implementation that filters only on the feed side is exposed the moment this page opens.
     def _creator_ids(self) -> dict:
         return {cid: i for i, (cid, _name) in enumerate(CREATORS)}
 
     def _creator(self, query: dict) -> None:
-        """`GET /api/user/info/v1/userProfile?user_id=` —— 信封形状 {code,message,data}。"""
+        """`GET /api/user/info/v1/userProfile?user_id=` — envelope shape {code,message,data}."""
         creator_id = (query.get("user_id") or [""])[0]
         offsets = self._creator_ids()
         if creator_id not in offsets:
@@ -243,17 +246,19 @@ class Handler(BaseHTTPRequestHandler):
             "nick_name": name,
             "avatar": f"{origin}/avatar/{creator_id}",
             "bio": BIOS.get(creator_id, ""),
-            # 稳定的假数字:同一个 creator 每次一样,截图/录屏才可比。
+            # Stable fake numbers: identical for a given creator every time, so screenshots
+            # and screen recordings stay comparable.
             "following_count": 10 + index * 7,
             "follower_count": 60 + index * 23,
             "like_count": 440 + index * 137,
         }})
 
     def _creator_items(self, query: dict) -> None:
-        """`GET /api/game/list/v1/userGames?user_id=&page=&size=` —— 该 creator 的 sekai,分页。
+        """`GET /api/game/list/v1/userGames?user_id=&page=&size=` — that creator's sekais, paged.
 
-        返回的 game_id 与 feed **完全同源**(creator_k 拥有每第 7 条)。只在 feed 那侧做过滤的
-        实现,一进这一页就会露馅 —— 这正是「拉黑后所有作品不可见」要考的东西。
+        The game_ids returned share **exactly** the feed's source (creator_k owns every 7th
+        item). An implementation that filters only on the feed side gives itself away as soon
+        as this page opens — which is precisely what "no works visible after a block" tests.
         """
         creator_id = (query.get("user_id") or [""])[0]
         offsets = self._creator_ids()
